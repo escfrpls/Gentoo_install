@@ -57,14 +57,13 @@ unset ROOT_PASS
 
 # Configure make.conf (Updated Polish mirror)
 cat <<EOF > /mnt/gentoo/etc/portage/make.conf
-COMMON_FLAGS="-march=native -O2 -pipe"
+COMMON_FLAGS="-march=znver4 -O2 -pipe"
 CFLAGS="\${COMMON_FLAGS}"
 CXXFLAGS="\${COMMON_FLAGS}"
 MAKEOPTS="-j$(nproc)"
-PORTAGE_SCHEDULING_POLICY="idle"
 ACCEPT_KEYWORDS="amd64"
 
-USE="X x xvmc lm-sensors imagemagick xorg xinerama acpi alsa bluetooth vulkan pulseaudio vaapi vdpau multilib -systemd -kde -gnome -nvidia networkmanager -wayland -gnome -plasma -telemetry -geoip -geolocate"
+USE="X alsa bluetooth vulkan pulseaudio vaapi vdpau multilib networkmanager -systemd"
 VIDEO_CARDS="amdgpu radeonsi"
 INPUT_DEVICES="libinput evdev"
 
@@ -93,7 +92,7 @@ CONFIG_R8169=y
 CONFIG_R8169_VLAN=y
 CONFIG_R8169_NAPI=y
 '
-echo "$KERNEL_EXTRA" >> /mnt/gentoo/usr/src/linux/.config
+echo "$KERNEL_EXTRA" > /mnt/gentoo/usr/src/linux/.config
 
 # Build Kernel
 chroot /mnt/gentoo /bin/bash <<EOF
@@ -111,7 +110,10 @@ chroot /mnt/gentoo emerge --sync
 # Install Packages
 chroot /mnt/gentoo emerge -q \
     sys-apps/dbus \
+    sys-devel/gcc \
     x11-base/xorg-server \
+    media-libs/mesa \
+    media-libs/vulkan-loader \
     x11-wm/i3 \
     x11-misc/dmenu \
     app-admin/doas \
@@ -129,17 +131,21 @@ chroot /mnt/gentoo emerge -q \
     x11-terms/st \
     app-shells/zsh \
     app-shells/zsh-completion \
-    net-misc/dhcpcd \
     net-misc/networkmanager \
     net-im/signal-desktop-bin \
-    net-im/discord-bin
+    net-im/discord-bin \
+    games-util/steam-launcher
+
+# Cleanup
+chroot /mnt/gentoo emerge -q @preserved-rebuild
+chroot /mnt/gentoo emerge --depclean
 
 # Network Configuration
+chroot /mnt/gentoo rc-update del dhcpcd default 2>/dev/null
 chroot /mnt/gentoo rc-update add NetworkManager default
-chroot /mnt/gentoo rc-update add dhcpcd default
 
 # User Configuration
-chroot /mnt/gentoo useradd -m -G wheel,audio,video,input,plugdev $USERNAME
+chroot /mnt/gentoo useradd -m -G wheel,audio,video,input,plugdev,portage,network $USERNAME
 echo "$USERNAME:$USER_PASS" | chroot /mnt/gentoo chpasswd
 unset USER_PASS
 
@@ -200,5 +206,5 @@ chroot /mnt/gentoo grub-mkconfig -o /boot/grub/grub.cfg
 echo "Installation complete! After reboot:"
 echo "1. Log in as $USERNAME"
 echo "2. Start network: doas rc-service NetworkManager start"
-echo "3. For Steam: doas emerge --ask games-util/steam-launcher"
-echo "4. Check display: xrandr --output DP-0 --mode 3440x1440 --rate 165"
+echo "3. Check display: xrandr --output DP-0 --mode 3440x1440 --rate 165"
+echo "4. For Steam: doas emerge --ask games-util/steam-launcher"
