@@ -1,4 +1,6 @@
 #!/bin/bash
+exec > >(tee /var/log/gentoo_install.log) 2>&1
+set -e
 
 # System Configuration
 DISK="/dev/nvme0n1"
@@ -10,14 +12,14 @@ USERNAME="escfrpls"
 TIMEZONE="Europe/Warsaw"
 
 # Initial Checks
-echo "Checking Ethernet connection..."
-if ! ip link show | grep -q "enp[0-9]\+s[0-9]"; then
-    echo "Error: No Ethernet interface found!"
+echo "Checking network..."
+if ! ip route | grep -q default; then
+    echo "Error: No default route (check network connection)"
     exit 1
 fi
 
-if ! ping -c 1 google.com >/dev/null 2>&1; then
-    echo "Error: No internet connection!"
+if mount | grep -q "$DISK"; then
+    echo "Error: Disk is mounted! Unmount first."
     exit 1
 fi
 
@@ -30,9 +32,9 @@ echo
 # Disk Preparation
 wipefs -af $DISK
 parted -s $DISK mklabel gpt
-parted -s $DISK mkpart primary fat32 1MiB 1024MiB
+parted -s $DISK mkpart primary fat32 1MiB 513MiB
 parted -s $DISK set 1 esp on
-parted -s $DISK mkpart primary ext4 1024MiB -32GiB
+parted -s $DISK mkpart primary ext4 513MiB -32GiB
 parted -s $DISK mkpart primary linux-swap -32GiB 100%
 
 # Filesystems
@@ -49,21 +51,57 @@ mount $BOOT_PART /mnt/gentoo/boot
 # Stage3
 STAGE3_URL=$(curl -s https://distfiles.gentoo.org/releases/amd64/autobuilds/latest-stage3-amd64-openrc.txt | grep -o 'https://.*stage3.*tar.xz')
 wget $STAGE3_URL -O /mnt/gentoo/stage3.tar.xz
+wget "${STAGE3_URL}.CONTENTS" -O /mnt/gentoo/stage3.CONTENTS
+
+echo "Verifying stage3 integrity..."
+tar tvf /mnt/gentoo/stage3.tar.xz | awk '{print $6}' > /mnt/gentoo/stage3.LIST
+if ! diff -q /mnt/gentoo/stage3.CONTENTS /mnt/gentoo/stage3.LIST; then
+    echo "Stage3 integrity check failed!"
+    exit 1
+fi
+
 tar xpvf /mnt/gentoo/stage3.tar.xz --xattrs-include='*.*' --numeric-owner -C /mnt/gentoo
 
 # Set root password
 echo "root:$ROOT_PASS" | chroot /mnt/gentoo chpasswd
 unset ROOT_PASS
 
-# Configure make.conf (Updated Polish mirror)
+# Configure make.conf
+CPU_FLAGS=$(chroot /mnt/gentoo cpuid2cpuflags | cut -d: -f2)
 cat <<EOF > /mnt/gentoo/etc/portage/make.conf
 COMMON_FLAGS="-march=znver4 -O2 -pipe"
 CFLAGS="\${COMMON_FLAGS}"
 CXXFLAGS="\${COMMON_FLAGS}"
 MAKEOPTS="-j$(nproc)"
 ACCEPT_KEYWORDS="amd64"
+CPU_FLAGS_X86="$CPU_FLAGS"
 
-USE="X alsa bluetooth vulkan pulseaudio vaapi vdpau multilib networkmanager -systemd"
+USE="
+    X
+    acpi
+    alsa
+    bluetooth
+    imagemagick
+    lm-sensors
+    multilib
+    networkmanager
+    pulseaudio
+    vaapi
+    vdpau
+    vulkan
+    xinerama
+    xvmc
+    -geoip
+    -geolocate
+    -gnome
+    -kde
+    -nvidia
+    -plasma
+    -systemd
+    -telemetry
+    -wayland
+"
+
 VIDEO_CARDS="amdgpu radeonsi"
 INPUT_DEVICES="libinput evdev"
 
@@ -73,10 +111,6 @@ L10N="en ru"
 GENTOO_MIRRORS="https://gentoo.mirror.gda.cloud.ovh.net/ http://ftp.icm.edu.pl/pub/Linux/gentoo/"
 FEATURES="parallel-fetch parallel-install"
 EOF
-
-# CPU Optimization
-chroot /mnt/gentoo emerge -q app-portage/cpuid2cpuflags
-echo "*/* $(chroot /mnt/gentoo cpuid2cpuflags)" > /mnt/gentoo/etc/portage/package.use/00cpu-flags
 
 # Kernel Configuration
 chroot /mnt/gentoo emerge -q sys-kernel/gentoo-sources linux-firmware
@@ -134,14 +168,15 @@ chroot /mnt/gentoo emerge -q \
     net-misc/networkmanager \
     net-im/signal-desktop-bin \
     net-im/discord-bin \
-    games-util/steam-launcher
+    games-util/steam-launcher \
+    sys-boot/grub \
+    efibootmgr
 
 # Cleanup
 chroot /mnt/gentoo emerge -q @preserved-rebuild
 chroot /mnt/gentoo emerge --depclean
 
 # Network Configuration
-chroot /mnt/gentoo rc-update del dhcpcd default 2>/dev/null
 chroot /mnt/gentoo rc-update add NetworkManager default
 
 # User Configuration
@@ -198,8 +233,7 @@ chroot /mnt/gentoo locale-gen
 echo "LANG=en_US.UTF-8" > /mnt/gentoo/etc/env.d/02locale
 
 # Bootloader
-chroot /mnt/gentoo emerge -q sys-boot/grub
-chroot /mnt/gentoo grub-install $DISK
+chroot /mnt/gentoo grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=Gentoo
 chroot /mnt/gentoo grub-mkconfig -o /boot/grub/grub.cfg
 
 # Final Message
@@ -207,4 +241,4 @@ echo "Installation complete! After reboot:"
 echo "1. Log in as $USERNAME"
 echo "2. Start network: doas rc-service NetworkManager start"
 echo "3. Check display: xrandr --output DP-0 --mode 3440x1440 --rate 165"
-echo "4. For Steam: doas emerge --ask games-util/steam-launcher"
+echo "4. For Steam: steam"
