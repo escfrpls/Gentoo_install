@@ -18,9 +18,12 @@ if ! ip route | grep -q default; then
     exit 1
 fi
 
+echo "Checking if disk is mounted..."
 if mount | grep -q "$DISK"; then
-    echo "Error: Disk is mounted! Unmount first."
-    exit 1
+    echo "Disk is mounted. Unmounting..."
+    umount -R $DISK || { echo "Error: Failed to unmount the disk."; exit 1; }
+else
+    echo "Disk is not mounted. Proceeding with the installation..."
 fi
 
 # Password Input
