@@ -250,4 +250,4 @@ chroot /mnt/gentoo grub-mkconfig -o /boot/grub/grub.cfg
 chroot /mnt/gentoo emerge --depclean
 chroot /mnt/gentoo eselect shell set /bin/zsh
 
-echo "Installation complete! Reboot and enjoy your gaming rig!"
+echo "Installation complete! Reabot pipiska"
