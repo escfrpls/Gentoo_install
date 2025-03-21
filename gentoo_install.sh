@@ -3,251 +3,205 @@ exec > >(tee /var/log/gentoo_install.log) 2>&1
 set -euo pipefail
 
 # --------------------------
-# System Configuration
+# Конфигурация системы
 # --------------------------
 DISK="/dev/nvme0n1"
 BOOT_PART="${DISK}p1"
 ROOT_PART="${DISK}p2"
 SWAP_PART="${DISK}p3"
-HOSTNAME="GentooLove"
-USERNAME="EscFrPls"
+HOSTNAME="GentooGaming"
+USERNAME="gamer"
 TIMEZONE="Europe/Warsaw"
-
-# Hardware Specific
-CPU_VENDOR="amd"
-GPU_VENDOR="amdgpu"
-WIFI_CHIPSET="intel"  # Для B650 Gaming WiFi (AX200/AX210)
+I3_CONFIG_REPO="https://raw.githubusercontent.com/escfrpls/i3-config/main"
 
 # --------------------------
-# Architecture Check
+# Проверки перед установкой
 # --------------------------
+# Проверка архитектуры
 if [ "$(uname -m)" != "x86_64" ]; then
-    echo "Error: This script is for x86_64 architecture only!"
+    echo "Ошибка: Скрипт предназначен только для архитектуры x86_64!"
     exit 1
 fi
 
-# --------------------------
-# Interrupt Handler
-# --------------------------
-trap cleanup INT
-cleanup() {
-    echo "Aborting installation..."
+# Проверка сети
+if ! ping -c1 gentoo.org &>/dev/null; then
+    echo "Ошибка: Нет подключения к интернету!"
+    exit 1
+fi
+
+# Обработка прерывания
+trap '{
+    echo "Прерывание! Очистка..."
     umount -R /mnt/gentoo || true
     swapoff "$SWAP_PART" || true
     exit 1
-}
+}' INT
 
 # --------------------------
-# Disk Space Check
-# --------------------------
-check_disk_space() {
-    local needed=15 # GB
-    local available=$(df -BG /mnt/gentoo | awk 'NR==2{print $4}' | tr -d 'G')
-    
-    if [ "$available" -lt "$needed" ]; then
-        echo "Error: Need at least ${needed}GB free space"
-        exit 1
-    fi
-}
-
-# --------------------------
-# Password Input with Verification
+# Ввод паролей с проверкой
 # --------------------------
 set +e
 while :; do
-    read -sp "Enter root password: " ROOT_PASS
+    read -sp "Введите пароль root: " ROOT_PASS
     echo
-    read -sp "Confirm root password: " ROOT_PASS_CONFIRM
+    read -sp "Подтвердите пароль root: " ROOT_PASS_CONFIRM
     echo
     [ "$ROOT_PASS" = "$ROOT_PASS_CONFIRM" ] && break
-    echo "Passwords do not match, try again."
+    echo "Пароли не совпадают!"
 done
 
 while :; do
-    read -sp "Enter password for $USERNAME: " USER_PASS
+    read -sp "Введите пароль для $USERNAME: " USER_PASS
     echo
-    read -sp "Confirm password for $USERNAME: " USER_PASS_CONFIRM
+    read -sp "Подтвердите пароль для $USERNAME: " USER_PASS_CONFIRM
     echo
     [ "$USER_PASS" = "$USER_PASS_CONFIRM" ] && break
-    echo "Passwords do not match, try again."
+    echo "Пароли не совпадают!"
 done
 set -e
-unset ROOT_PASS_CONFIRM USER_PASS_CONFIRM
 
 # --------------------------
-# Disk Safety Check
+# Подтверждение стирания диска
 # --------------------------
-echo "WARNING: About to wipe ALL data on $DISK!"
-echo -n "Are you absolutely sure? (type uppercase YES): "
-read confirmation
-if [ "$confirmation" != "YES" ]; then
-    echo "Aborted by user."
+echo "ВНИМАНИЕ: Будет уничтожена вся информация на $DISK!"
+read -p "Подтвердите операцию (введите YES): " confirm
+if [ "$confirm" != "YES" ]; then
+    echo "Отмена операции."
     exit 1
 fi
 
 # --------------------------
-# Disk Preparation
+# Разметка диска
 # --------------------------
 wipefs -af "$DISK"
 parted -s "$DISK" mklabel gpt
-parted -s "$DISK" mkpart primary fat32 1MiB 513MiB
+parted -s "$DISK" mkpart ESP fat32 1MiB 513MiB
 parted -s "$DISK" set 1 esp on
 parted -s "$DISK" mkpart primary ext4 513MiB -32GiB
 parted -s "$DISK" mkpart primary linux-swap -32GiB 100%
 
-# --------------------------
-# Creating Filesystems
-# --------------------------
-mkfs.fat -F 32 -n BOOT "$BOOT_PART"
-mkfs.ext4 -L GENTOO -F "$ROOT_PART"
+# Создание файловых систем
+mkfs.fat -F32 -n EFI "$BOOT_PART"
+mkfs.ext4 -L GENTOO "$ROOT_PART"
 mkswap -L SWAP "$SWAP_PART"
 swapon "$SWAP_PART"
 
-# --------------------------
-# Mounting Partitions
-# --------------------------
-mount "$ROOT_PART" /mnt/gentoo || { echo "Failed to mount root partition"; exit 1; }
+# Монтирование
+mount "$ROOT_PART" /mnt/gentoo
 mkdir -p /mnt/gentoo/boot
-mount "$BOOT_PART" /mnt/gentoo/boot || { echo "Failed to mount boot partition"; exit 1; }
+mount "$BOOT_PART" /mnt/gentoo/boot
 
 # --------------------------
-# Stage3 Download & Extraction
+# Установка Stage3
 # --------------------------
-STAGE3_URL=$(curl -s https://distfiles.gentoo.org/releases/amd64/autobuilds/latest-stage3-amd64-openrc.txt | grep -v '^#' | awk '{print $1}')
+STAGE3_URL=$(curl -s https://distfiles.gentoo.org/releases/amd64/autobuilds/latest-stage3-amd64-openrc.txt | 
+    grep -v '^#' | awk '/stage3-amd64-openrc/{print $1}')
 FULL_URL="https://distfiles.gentoo.org/releases/amd64/autobuilds/${STAGE3_URL}"
-echo "Downloading stage3: $FULL_URL"
-wget "$FULL_URL" -O /mnt/gentoo/stage3.tar.xz || { echo "Stage3 download failed"; exit 1; }
 
-echo "Extracting stage3..."
-tar xpf /mnt/gentoo/stage3.tar.xz --xattrs-include='*.*' --numeric-owner -C /mnt/gentoo
+echo "Загрузка Stage3: $FULL_URL"
+wget "$FULL_URL" -O /mnt/gentoo/stage3.tar.xz || {
+    echo "Ошибка загрузки Stage3!"
+    exit 1
+}
 
-# --------------------------
-# CPU-Specific Optimizations
-# --------------------------
-chroot /mnt/gentoo emerge -q app-misc/resolve-march-native
-MARCH_NATIVE=$(chroot /mnt/gentoo resolve-march-native)
-CPU_FLAGS=$(chroot /mnt/gentoo cpuid2cpuflags | cut -d: -f2)
+echo "Распаковка Stage3..."
+tar xpf /mnt/gentoo/stage3.tar.xz --xattrs-include='*.*' -C /mnt/gentoo
 
 # --------------------------
-# make.conf Configuration
+# Базовая настройка системы
 # --------------------------
+# Настройка make.conf
 cat <<EOF > /mnt/gentoo/etc/portage/make.conf
-COMMON_FLAGS="${MARCH_NATIVE} -O2 -pipe"
+COMMON_FLAGS="-march=znver4 -O2 -pipe"
 CFLAGS="\${COMMON_FLAGS}"
 CXXFLAGS="\${COMMON_FLAGS}"
-MAKEOPTS="-j\$(nproc)"
-ACCEPT_KEYWORDS="amd64"
-CPU_FLAGS_X86="${CPU_FLAGS}"
+MAKEOPTS="-j$(nproc)"
+EMERGE_DEFAULT_OPTS="--jobs=$(nproc)"
 
-USE="
-    bluetooth
-    elogind
-    gui
-    vulkan
-    wayland
-    X
-    alsa
-    pulseaudio
-    vaapi
-    vdpau
-    networkmanager
-    wifi
-    -systemd
-"
-
+USE="X alsa bluetooth elogind gamemode networkmanager pulseaudio vaapi vulkan wifi lm-sensors vaapi -geoip -geolocate -gnome -kde -nvidia -plasma -systemd -telemetry -telemetry -wayland"
+CPU_FLAGS_X86="$(chroot /mnt/gentoo cpuid2cpuflags | cut -d: -f2)"
 VIDEO_CARDS="amdgpu radeonsi"
-INPUT_DEVICES="libinput evdev"
+INPUT_DEVICES="libinput"
 
-LINGUAS="en ru"
-L10N="en ru"
-
-GENTOO_MIRRORS="\$(mirrorselect -s5 -o)"
+ACCEPT_KEYWORDS="amd64"
 FEATURES="parallel-fetch parallel-install"
+GENTOO_MIRRORS="$(mirrorselect -s5 -o)"
 EOF
 
 # --------------------------
-# Hardware-Specific Kernel Config
+# Настройка ядра
 # --------------------------
+chroot /mnt/gentoo emerge -q sys-kernel/gentoo-sources linux-firmware
+
+# Конфигурация для 7900X3D и 7900 XTX
 cat <<EOF > /mnt/gentoo/usr/src/linux/.config
-# Ядро для AMD Ryzen 9 7900X3D и Radeon RX 7900 XTX
 CONFIG_AMD_XGBE=y
 CONFIG_PCIE_AMD=y
-CONFIG_AMD_IOMMU=y
-CONFIG_SENSORS_ASUS_WMI=y
-CONFIG_IWLWIFI=y
-CONFIG_IWLMVM=y
-CONFIG_IWLWIFI_PCI=y
-CONFIG_CFG80211=y
 CONFIG_DRM_AMDGPU=y
 CONFIG_DRM_AMD_DC_DCN=y
-CONFIG_DRM_AMD_SECURE_DISPLAY=y
+CONFIG_IWLWIFI=m
+CONFIG_IWLMVM=m
+CONFIG_CFG80211=y
+CONFIG_EXTRA_FIRMWARE="amdgpu/aldebaran_smc.bin"
+CONFIG_FW_CACHE=y
+CONFIG_ZEN3=y
+CONFIG_AMD_MEM_ENCRYPT=y
 CONFIG_AMD_PMC=y
 CONFIG_X86_AMD_PSTATE=y
-CONFIG_DRM_AMDGPU_CIK=y
-CONFIG_DRM_AMDGPU_USERPTR=y
-CONFIG_HSA_AMD=y
-CONFIG_AMD_MEM_ENCRYPT=y
-CONFIG_CRYPTO_DEV_CCP=y
-CONFIG_ZEN3=y
 EOF
 
-# --------------------------
-# Build Kernel
-# --------------------------
-chroot /mnt/gentoo emerge -q sys-kernel/gentoo-sources linux-firmware iw wpa_supplicant
-
-echo "Configuring kernel..."
+# Сборка ядра
 chroot /mnt/gentoo /bin/bash <<EOF
 cd /usr/src/linux
 make olddefconfig
-make -j\$(nproc) && make modules_install
+make -j$(nproc) && make modules_install
 make install
 EOF
 
 # --------------------------
-# System Configuration
-# --------------------------
-# Профиль
-chroot /mnt/gentoo eselect profile set default/linux/amd64/17.1/desktop/openrc
-
-# Пароли
-echo "root:${ROOT_PASS}" | chroot /mnt/gentoo chpasswd
-unset ROOT_PASS
-
-# Пользователь
-chroot /mnt/gentoo useradd -m -G wheel,audio,video,input,plugdev,portage,network ${USERNAME}
-echo "${USERNAME}:${USER_PASS}" | chroot /mnt/gentoo chpasswd
-unset USER_PASS
-
-# Сеть
-chroot /mnt/gentoo emerge -q net-misc/networkmanager
-chroot /mnt/gentoo rc-update add NetworkManager default
-
-# Wi-Fi
-chroot /mnt/gentoo emerge -q net-wireless/iw net-wireless/wpa_supplicant
-
-# --------------------------
-# GPU Configuration
+# Установка окружения
 # --------------------------
 chroot /mnt/gentoo emerge -q \
-    x11-drivers/xf86-video-amdgpu \
-    media-libs/mesa \
-    media-libs/vulkan-loader \
-    media-libs/vulkan-radeon
+    x11-wm/i3 \
+    x11-misc/i3status \
+    x11-terms/st \
+    media-fonts/fontawesome \
+    net-misc/networkmanager \
+    sys-apps/dbus \
+    app-admin/doas
+
+# Загрузка конфигов i3
+mkdir -p /mnt/gentoo/home/${USERNAME}/.config/{i3,i3status}
+wget "${I3_CONFIG_REPO}/config" -O /mnt/gentoo/home/${USERNAME}/.config/i3/config
+wget "${I3_CONFIG_REPO}/i3status.conf" -O /mnt/gentoo/home/${USERNAME}/.config/i3status/config
+
+# Настройка AMD GPU
+echo "exec_always --no-startup-id amdgpu-clocks --performance" >> /mnt/gentoo/home/${USERNAME}/.config/i3/config
 
 # --------------------------
-# Final Setup
+# Финальная настройка
 # --------------------------
-# Временная зона
+# Настройка пользователя
+chroot /mnt/gentoo useradd -m -G wheel,audio,video,usb,portage ${USERNAME}
+echo "root:${ROOT_PASS}" | chroot /mnt/gentoo chpasswd
+echo "${USERNAME}:${USER_PASS}" | chroot /mnt/gentoo chpasswd
+unset ROOT_PASS USER_PASS
+
+# Настройка времени
 chroot /mnt/gentoo ln -sf "/usr/share/zoneinfo/${TIMEZONE}" /etc/localtime
+chroot /mnt/gentoo emerge -q net-misc/chrony
+chroot /mnt/gentoo rc-update add chronyd default
 
-# GRUB
-chroot /mnt/gentoo emerge -q sys-boot/grub efibootmgr
+# Настройка загрузчика
+chroot /mnt/gentoo emerge -q sys-boot/grub
 chroot /mnt/gentoo grub-install --target=x86_64-efi --efi-directory=/boot
 chroot /mnt/gentoo grub-mkconfig -o /boot/grub/grub.cfg
 
 # Очистка
 chroot /mnt/gentoo emerge --depclean
-chroot /mnt/gentoo eselect shell set /bin/zsh
 
-echo "Installation complete! Reabot pipiska"
+echo "Установка завершена! Для входа в систему:"
+echo "1. Перезагрузитесь"
+echo "2. Войдите под пользователем ${USERNAME}"
+echo "3. Запустите NetworkManager: sudo rc-service NetworkManager start"
+echo "4. Запустите графическое окружение: startx"
